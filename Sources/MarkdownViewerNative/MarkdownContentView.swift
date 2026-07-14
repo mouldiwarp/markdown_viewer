@@ -37,36 +37,11 @@ struct MarkdownContentView: View {
         .onReceive([showDiagramViewer].publisher) { value in
             if value, let diagram = selectedDiagram {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                    openDiagramWindow(diagram: diagram)
+                    DiagramWindowManager.shared.openDiagramWindow(image: diagram, isDarkMode: isDarkMode)
                     showDiagramViewer = false
                 }
             }
         }
-    }
-
-    private func openDiagramWindow(diagram: NSImage) {
-        let window = NSWindow()
-        window.styleMask = [.titled, .closable, .resizable, .fullSizeContentView]
-        window.title = "Diagram Viewer"
-        window.setFrame(NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1200, height: 800), display: true)
-
-        // Create a window controller to manage the window lifecycle properly
-        let windowController = NSWindowController(window: window)
-
-        // Create content view with close handler
-        let contentView = DiagramViewerWindow(image: diagram, isDarkMode: isDarkMode) {
-            window.close()
-        }
-
-        window.contentView = NSHostingView(rootView: contentView)
-        window.isReleasedWhenClosed = true
-        window.canHide = true
-
-        // Set the close button to actually close the window
-        window.standardWindowButton(.closeButton)?.target = window
-        window.standardWindowButton(.closeButton)?.action = #selector(NSWindow.close)
-
-        window.makeKeyAndOrderFront(nil)
     }
 }
 
@@ -441,7 +416,6 @@ struct TableView: View {
 struct DiagramViewerWindow: View {
     let image: NSImage
     let isDarkMode: Bool
-    let onClose: () -> Void
 
     var body: some View {
         VStack(spacing: 0) {
