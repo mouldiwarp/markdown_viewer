@@ -14,31 +14,29 @@ struct MarkdownContentView: View {
     @State private var showDiagramViewer = false
 
     var body: some View {
-        ZStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 0) {
-                    ForEach(Array(document.children.enumerated()), id: \.offset) { index, block in
-                        MarkdownBlockView(
-                            block: block,
-                            isDarkMode: isDarkMode,
-                            onDiagramSelected: { image in
-                                selectedDiagram = image
-                                showDiagramViewer = true
-                            }
-                        )
-                        .padding(.bottom, 16)
-                    }
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(Array(document.children.enumerated()), id: \.offset) { index, block in
+                    MarkdownBlockView(
+                        block: block,
+                        isDarkMode: isDarkMode,
+                        onDiagramSelected: { image in
+                            selectedDiagram = image
+                            showDiagramViewer = true
+                        }
+                    )
+                    .padding(.bottom, 16)
                 }
-                .padding(.horizontal, 40)
-                .padding(.vertical, 20)
-                .frame(maxWidth: 900)
-                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .background(Color(nsColor: isDarkMode ? .black : .white))
-
-            // Modal diagram viewer
-            if showDiagramViewer, let diagram = selectedDiagram {
-                DiagramViewerModal(image: diagram, isPresented: $showDiagramViewer, isDarkMode: isDarkMode)
+            .padding(.horizontal, 40)
+            .padding(.vertical, 20)
+            .frame(maxWidth: 900)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .background(Color(nsColor: isDarkMode ? .black : .white))
+        .sheet(isPresented: $showDiagramViewer) {
+            if let diagram = selectedDiagram {
+                DiagramViewerWindow(image: diagram, isDarkMode: isDarkMode)
             }
         }
     }
@@ -411,66 +409,58 @@ struct TableView: View {
     }
 }
 
-// MARK: - Diagram Viewer Modal
-struct DiagramViewerModal: View {
+// MARK: - Diagram Viewer Window
+struct DiagramViewerWindow: View {
     let image: NSImage
-    @Binding var isPresented: Bool
     let isDarkMode: Bool
+    @Environment(\.dismiss) var dismiss
 
     @State private var scale: CGFloat = 1.0
     @State private var offset: CGSize = .zero
 
     var body: some View {
-        ZStack {
-            // Semi-transparent background
-            Color.black.opacity(0.4)
-                .ignoresSafeArea()
-                .onTapGesture {
-                    isPresented = false
+        VStack(spacing: 0) {
+            // Toolbar
+            HStack {
+                Text("Diagram Viewer")
+                    .font(.headline)
+
+                Spacer()
+
+                Button(action: resetZoom) {
+                    Image(systemName: "arrow.up.left.and.arrow.down.right")
+                        .font(.system(size: 14))
                 }
+                .help("Reset zoom and pan (R)")
+                .keyboardShortcut("r", modifiers: [])
 
-            VStack(spacing: 0) {
-                // Toolbar
-                HStack {
-                    Text("Diagram Viewer")
-                        .font(.headline)
-
-                    Spacer()
-
-                    Button(action: resetZoom) {
-                        Image(systemName: "arrow.up.left.and.arrow.down.right")
-                            .font(.system(size: 14))
-                    }
-                    .help("Reset zoom and pan")
-
-                    Button(action: { isPresented = false }) {
-                        Image(systemName: "xmark.circle.fill")
-                            .font(.system(size: 18))
-                            .foregroundColor(.secondary)
-                    }
-                    .help("Close (Esc)")
-                }
-                .padding(12)
-                .background(Color(nsColor: isDarkMode ? .darkGray : .lightGray))
-                .border(Color.gray.opacity(0.3), width: 1)
-
-                // Diagram with zoom and pan
-                ZoomablePanView(image: image, scale: $scale, offset: $offset, isDarkMode: isDarkMode)
-
-                // Controls hint
-                VStack(spacing: 4) {
-                    Text("Scroll to zoom • Drag to pan • Double-click to reset")
-                        .font(.caption)
+                Button(action: { dismiss() }) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 18))
                         .foregroundColor(.secondary)
                 }
-                .padding(8)
-                .background(Color(nsColor: isDarkMode ? NSColor(red: 0.1, green: 0.1, blue: 0.1, alpha: 1) : NSColor(red: 0.95, green: 0.95, blue: 0.95, alpha: 1)))
+                .help("Close (Esc)")
+                .keyboardShortcut(.cancelAction)
             }
-            .frame(maxWidth: 1000, maxHeight: 700)
-            .background(Color(nsColor: isDarkMode ? .black : .white))
-            .cornerRadius(12)
-            .shadow(radius: 20)
+            .padding(12)
+            .background(Color(nsColor: isDarkMode ? .darkGray : .lightGray))
+            .border(Color.gray.opacity(0.3), width: 1)
+
+            // Diagram with zoom and pan
+            ZoomablePanView(image: image, scale: $scale, offset: $offset, isDarkMode: isDarkMode)
+                .ignoresSafeArea()
+
+            // Controls hint
+            VStack(spacing: 4) {
+                Text("🔍 Scroll to zoom • Drag to pan • R to reset • Double-click to reset zoom")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            .padding(8)
+            .background(Color(nsColor: isDarkMode ? NSColor(red: 0.1, green: 0.1, blue: 0.1, alpha: 1) : NSColor(red: 0.95, green: 0.95, blue: 0.95, alpha: 1)))
         }
+        .background(Color(nsColor: isDarkMode ? .black : .white))
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private func resetZoom() {
@@ -489,50 +479,55 @@ struct ZoomablePanView: View {
     let isDarkMode: Bool
 
     @State private var lastScale: CGFloat = 1.0
+    @State private var lastDragValue: CGSize = .zero
 
     var body: some View {
-        ScrollViewReader { reader in
-            ZStack {
-                Color(nsColor: isDarkMode ? .black : .white)
-                    .id("content")
+        ZStack {
+            Color(nsColor: isDarkMode ? .black : .white)
 
-                Image(nsImage: image)
-                    .resizable()
-                    .scaledToFit()
-                    .scaleEffect(scale)
-                    .offset(offset)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-            .gesture(
-                MagnificationGesture()
-                    .onChanged { value in
-                        let delta = value / lastScale
-                        lastScale = value
+            Image(nsImage: image)
+                .resizable()
+                .scaledToFit()
+                .scaleEffect(scale, anchor: .center)
+                .offset(offset)
+        }
+        .contentShape(Rectangle())
+        .gesture(
+            MagnificationGesture()
+                .onChanged { value in
+                    let delta = value / lastScale
+                    lastScale = value
 
-                        // Constrain zoom between 0.5x and 5x
-                        let newScale = (scale * delta).clamped(to: 0.5...5.0)
-                        scale = newScale
-                    }
-                    .onEnded { _ in
-                        lastScale = 1.0
-                    }
-            )
-            .gesture(
-                DragGesture()
-                    .onChanged { value in
-                        offset.width += value.translation.width
-                        offset.height += value.translation.height
-                    }
-                    .onEnded { _ in
-                        // Optional: add momentum/inertia here
-                    }
-            )
-            .onTapGesture(count: 2) {
-                // Double-tap to reset
-                withAnimation(.easeInOut(duration: 0.3)) {
-                    scale = 1.0
-                    offset = .zero
+                    // Constrain zoom between 0.5x and 5x
+                    let newScale = (scale * delta).clamped(to: 0.5...5.0)
+                    scale = newScale
                 }
+                .onEnded { _ in
+                    lastScale = 1.0
+                }
+        )
+        .gesture(
+            DragGesture()
+                .onChanged { value in
+                    let newDrag = value.translation
+                    let delta = CGSize(
+                        width: newDrag.width - lastDragValue.width,
+                        height: newDrag.height - lastDragValue.height
+                    )
+
+                    offset.width += delta.width
+                    offset.height += delta.height
+                    lastDragValue = newDrag
+                }
+                .onEnded { _ in
+                    lastDragValue = .zero
+                }
+        )
+        .onTapGesture(count: 2) {
+            // Double-tap to reset
+            withAnimation(.easeInOut(duration: 0.3)) {
+                scale = 1.0
+                offset = .zero
             }
         }
     }
