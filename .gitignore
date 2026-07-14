@@ -1,8 +1,49 @@
+# Build artifacts
 .build/
 .swiftpm/
-.DS_Store
+*.app/
+
+# Xcode
 *.xcodeproj/
 *.xcworkspace/
+xcuserdata/
+*.xcbkptlist
+*.xccheckout
+DerivedData/
+
+# Swift Package Manager
+.package.resolved
+Package.resolved
+
+# Temporary files
 *.playground
+.DS_Store
+*.tmp
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Environment
 .env
 .env.local
+.env.*.local
+
+# macOS
+.AppleDouble
+.LSOverride
+._*
+
+# Testing
+.xctest/
+.coverage/
+
+# Output
+build/
+dist/
+*.dmg
+*.zip
