@@ -1,6 +1,32 @@
 import SwiftUI
 import Markdown
 
+// MARK: - Window Manager
+class DiagramWindowManager: NSObject, NSWindowDelegate {
+    static let shared = DiagramWindowManager()
+    private var windows: [NSWindow] = []
+
+    func openDiagramWindow(image: NSImage, isDarkMode: Bool) {
+        let window = NSWindow()
+        window.delegate = self
+        window.styleMask = [.titled, .closable, .resizable, .fullSizeContentView]
+        window.title = "Diagram Viewer"
+        window.setFrame(NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1200, height: 800), display: true)
+
+        let contentView = DiagramViewerWindow(image: image, isDarkMode: isDarkMode)
+        window.contentView = NSHostingView(rootView: contentView)
+
+        windows.append(window)
+        window.makeKeyAndOrderFront(nil)
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        if let window = notification.object as? NSWindow {
+            windows.removeAll { $0 === window }
+        }
+    }
+}
+
 struct ContentView: View {
     @State private var document: Document?
     @State private var filename: String = "No file loaded"
