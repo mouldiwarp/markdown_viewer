@@ -7,17 +7,27 @@ class DiagramWindowManager: NSObject, NSWindowDelegate {
     private var windows: [NSWindow] = []
 
     func openDiagramWindow(image: NSImage, isDarkMode: Bool) {
-        let window = NSWindow()
-        window.delegate = self
-        window.styleMask = [.titled, .closable, .resizable, .fullSizeContentView]
-        window.title = "Diagram Viewer"
-        window.setFrame(NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1200, height: 800), display: true)
+        DispatchQueue.main.async { [weak self] in
+            let window = NSWindow(
+                contentRect: NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1200, height: 800),
+                styleMask: [.titled, .closable, .resizable, .fullSizeContentView],
+                backing: .buffered,
+                defer: false
+            )
 
-        let contentView = DiagramViewerWindow(image: image, isDarkMode: isDarkMode)
-        window.contentView = NSHostingView(rootView: contentView)
+            window.title = "Diagram Viewer"
+            window.delegate = self
 
-        windows.append(window)
-        window.makeKeyAndOrderFront(nil)
+            let contentView = DiagramViewerWindow(image: image, isDarkMode: isDarkMode)
+            let hostingView = NSHostingView(rootView: contentView)
+            hostingView.autoresizingMask = [.width, .height]
+
+            window.contentView = hostingView
+            window.isReleasedWhenClosed = true
+
+            self?.windows.append(window)
+            window.makeKeyAndOrderFront(nil)
+        }
     }
 
     func windowWillClose(_ notification: Notification) {
