@@ -10,26 +10,44 @@ struct MarkdownContentView: View {
     let document: Document
     let isDarkMode: Bool
 
+    @State private var selectedDiagram: NSImage?
+    @State private var showDiagramViewer = false
+
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
-                ForEach(Array(document.children.enumerated()), id: \.offset) { index, block in
-                    MarkdownBlockView(block: block, isDarkMode: isDarkMode)
+        ZStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(Array(document.children.enumerated()), id: \.offset) { index, block in
+                        MarkdownBlockView(
+                            block: block,
+                            isDarkMode: isDarkMode,
+                            onDiagramSelected: { image in
+                                selectedDiagram = image
+                                showDiagramViewer = true
+                            }
+                        )
                         .padding(.bottom, 16)
+                    }
                 }
+                .padding(.horizontal, 40)
+                .padding(.vertical, 20)
+                .frame(maxWidth: 900)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .padding(.horizontal, 40)
-            .padding(.vertical, 20)
-            .frame(maxWidth: 900)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color(nsColor: isDarkMode ? .black : .white))
+
+            // Modal diagram viewer
+            if showDiagramViewer, let diagram = selectedDiagram {
+                DiagramViewerModal(image: diagram, isPresented: $showDiagramViewer, isDarkMode: isDarkMode)
+            }
         }
-        .background(Color(nsColor: isDarkMode ? .black : .white))
     }
 }
 
 struct MarkdownBlockView: View {
     let block: Markup
     let isDarkMode: Bool
+    let onDiagramSelected: ((NSImage) -> Void)?
 
     var body: some View {
         Group {
@@ -38,13 +56,13 @@ struct MarkdownBlockView: View {
             } else if let paragraph = block as? Paragraph {
                 ParagraphView(paragraph: paragraph, isDarkMode: isDarkMode)
             } else if let codeBlock = block as? CodeBlock {
-                CodeBlockView(codeBlock: codeBlock, isDarkMode: isDarkMode)
+                CodeBlockView(codeBlock: codeBlock, isDarkMode: isDarkMode, onDiagramSelected: onDiagramSelected)
             } else if let list = block as? UnorderedList {
                 UnorderedListView(list: list, isDarkMode: isDarkMode)
             } else if let list = block as? OrderedList {
                 OrderedListView(list: list, isDarkMode: isDarkMode)
             } else if let blockQuote = block as? BlockQuote {
-                BlockQuoteView(blockQuote: blockQuote, isDarkMode: isDarkMode)
+                BlockQuoteView(blockQuote: blockQuote, isDarkMode: isDarkMode, onDiagramSelected: onDiagramSelected)
             } else if let table = block as? MarkdownTable {
                 TableView(table: table, isDarkMode: isDarkMode)
             } else if let thematicBreak = block as? ThematicBreak {
@@ -146,13 +164,14 @@ struct InlineMarkupView: View {
 struct CodeBlockView: View {
     let codeBlock: CodeBlock
     let isDarkMode: Bool
+    let onDiagramSelected: ((NSImage) -> Void)?
 
     var body: some View {
         let language = codeBlock.language ?? "plain"
         let isMermaid = language.lowercased() == "mermaid"
 
         if isMermaid {
-            MermaidBlockView(code: codeBlock.code, isDarkMode: isDarkMode)
+            MermaidBlockView(code: codeBlock.code, isDarkMode: isDarkMode, onDiagramSelected: onDiagramSelected)
         } else {
             VStack(alignment: .leading, spacing: 0) {
                 if !language.isEmpty && language != "plain" {
@@ -180,6 +199,7 @@ struct CodeBlockView: View {
 struct MermaidBlockView: View {
     let code: String
     let isDarkMode: Bool
+    let onDiagramSelected: ((NSImage) -> Void)?
 
     @State private var svgImage: NSImage?
     @State private var isLoading = false
@@ -214,6 +234,10 @@ struct MermaidBlockView: View {
                     .resizable()
                     .scaledToFit()
                     .frame(maxWidth: .infinity, maxHeight: 400)
+                    .onTapGesture {
+                        onDiagramSelected?(image)
+                    }
+                    .help("Click to open interactive zoom and pan view")
             } else {
                 Text("No diagram rendered")
                     .font(.caption)
@@ -343,6 +367,7 @@ struct OrderedListView: View {
 struct BlockQuoteView: View {
     let blockQuote: BlockQuote
     let isDarkMode: Bool
+    let onDiagramSelected: ((NSImage) -> Void)?
 
     var body: some View {
         HStack(spacing: 0) {
@@ -352,7 +377,7 @@ struct BlockQuoteView: View {
 
             VStack(alignment: .leading, spacing: 8) {
                 ForEach(Array(blockQuote.children.enumerated()), id: \.offset) { _, child in
-                    MarkdownBlockView(block: child, isDarkMode: isDarkMode)
+                    MarkdownBlockView(block: child, isDarkMode: isDarkMode, onDiagramSelected: onDiagramSelected)
                 }
             }
             .padding(.horizontal, 12)
@@ -382,6 +407,146 @@ struct TableView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(Color(nsColor: isDarkMode ? .darkGray : NSColor(red: 0.95, green: 0.95, blue: 0.95, alpha: 1)))
                 .cornerRadius(4)
+        }
+    }
+}
+
+// MARK: - Diagram Viewer Modal
+struct DiagramViewerModal: View {
+    let image: NSImage
+    @Binding var isPresented: Bool
+    let isDarkMode: Bool
+
+    @State private var scale: CGFloat = 1.0
+    @State private var offset: CGSize = .zero
+
+    var body: some View {
+        ZStack {
+            // Semi-transparent background
+            Color.black.opacity(0.4)
+                .ignoresSafeArea()
+                .onTapGesture {
+                    isPresented = false
+                }
+
+            VStack(spacing: 0) {
+                // Toolbar
+                HStack {
+                    Text("Diagram Viewer")
+                        .font(.headline)
+
+                    Spacer()
+
+                    Button(action: resetZoom) {
+                        Image(systemName: "arrow.up.left.and.arrow.down.right")
+                            .font(.system(size: 14))
+                    }
+                    .help("Reset zoom and pan")
+
+                    Button(action: { isPresented = false }) {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 18))
+                            .foregroundColor(.secondary)
+                    }
+                    .help("Close (Esc)")
+                }
+                .padding(12)
+                .background(Color(nsColor: isDarkMode ? .darkGray : .lightGray))
+                .border(Color.gray.opacity(0.3), width: 1)
+
+                // Diagram with zoom and pan
+                ZoomablePanView(image: image, scale: $scale, offset: $offset, isDarkMode: isDarkMode)
+
+                // Controls hint
+                VStack(spacing: 4) {
+                    Text("Scroll to zoom • Drag to pan • Double-click to reset")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                .padding(8)
+                .background(Color(nsColor: isDarkMode ? NSColor(red: 0.1, green: 0.1, blue: 0.1, alpha: 1) : NSColor(red: 0.95, green: 0.95, blue: 0.95, alpha: 1)))
+            }
+            .frame(maxWidth: 1000, maxHeight: 700)
+            .background(Color(nsColor: isDarkMode ? .black : .white))
+            .cornerRadius(12)
+            .shadow(radius: 20)
+        }
+    }
+
+    private func resetZoom() {
+        withAnimation(.easeInOut(duration: 0.3)) {
+            scale = 1.0
+            offset = .zero
+        }
+    }
+}
+
+// MARK: - Zoomable Pan View
+struct ZoomablePanView: View {
+    let image: NSImage
+    @Binding var scale: CGFloat
+    @Binding var offset: CGSize
+    let isDarkMode: Bool
+
+    @State private var lastScale: CGFloat = 1.0
+
+    var body: some View {
+        ScrollViewReader { reader in
+            ZStack {
+                Color(nsColor: isDarkMode ? .black : .white)
+                    .id("content")
+
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFit()
+                    .scaleEffect(scale)
+                    .offset(offset)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            .gesture(
+                MagnificationGesture()
+                    .onChanged { value in
+                        let delta = value / lastScale
+                        lastScale = value
+
+                        // Constrain zoom between 0.5x and 5x
+                        let newScale = (scale * delta).clamped(to: 0.5...5.0)
+                        scale = newScale
+                    }
+                    .onEnded { _ in
+                        lastScale = 1.0
+                    }
+            )
+            .gesture(
+                DragGesture()
+                    .onChanged { value in
+                        offset.width += value.translation.width
+                        offset.height += value.translation.height
+                    }
+                    .onEnded { _ in
+                        // Optional: add momentum/inertia here
+                    }
+            )
+            .onTapGesture(count: 2) {
+                // Double-tap to reset
+                withAnimation(.easeInOut(duration: 0.3)) {
+                    scale = 1.0
+                    offset = .zero
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Helper Extensions
+extension Comparable {
+    func clamped(to range: ClosedRange<Self>) -> Self {
+        if self < range.lowerBound {
+            return range.lowerBound
+        } else if self > range.upperBound {
+            return range.upperBound
+        } else {
+            return self
         }
     }
 }
