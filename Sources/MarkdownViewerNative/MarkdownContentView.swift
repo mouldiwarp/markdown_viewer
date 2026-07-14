@@ -6,6 +6,94 @@ typealias MarkdownText = Markdown.Text
 typealias MarkdownLink = Markdown.Link
 typealias MarkdownTable = Markdown.Table
 
+// MARK: - Inline Markup -> AttributedString
+//
+// Inline markup (bold, italic, strikethrough, links, code) is composed into a single
+// `AttributedString` per paragraph/heading/cell rather than one SwiftUI view per child.
+// This does two things a naive per-child-view approach can't:
+//   1. Preserves nested formatting (e.g. "**bold _italic_**") instead of flattening
+//      nested spans to plain text via `.plainText`.
+//   2. Lets the whole run of inline content wrap and flow as one paragraph, instead of
+//      each inline child (text run, bold run, link, ...) stacking on its own line.
+func buildAttributedString(from container: Markup, isDarkMode: Bool) -> AttributedString {
+    var result = AttributedString()
+    for child in container.children {
+        result += attributedFragment(for: child, isDarkMode: isDarkMode, bold: false, italic: false, strikethrough: false)
+    }
+    return result
+}
+
+private func attributedFragment(
+    for markup: Markup,
+    isDarkMode: Bool,
+    bold: Bool,
+    italic: Bool,
+    strikethrough: Bool
+) -> AttributedString {
+    let baseColor: Color = isDarkMode ? .white : .black
+
+    func styledFont() -> Font? {
+        guard bold || italic else { return nil }
+        var font = Font.body
+        if bold { font = font.bold() }
+        if italic { font = font.italic() }
+        return font
+    }
+
+    if let text = markup as? MarkdownText {
+        var attr = AttributedString(text.string)
+        attr.foregroundColor = baseColor
+        if let font = styledFont() { attr.font = font }
+        if strikethrough { attr.strikethroughStyle = .single }
+        return attr
+    } else if let emphasis = markup as? Emphasis {
+        var result = AttributedString()
+        for child in emphasis.children {
+            result += attributedFragment(for: child, isDarkMode: isDarkMode, bold: bold, italic: true, strikethrough: strikethrough)
+        }
+        return result
+    } else if let strong = markup as? Strong {
+        var result = AttributedString()
+        for child in strong.children {
+            result += attributedFragment(for: child, isDarkMode: isDarkMode, bold: true, italic: italic, strikethrough: strikethrough)
+        }
+        return result
+    } else if let strikethroughNode = markup as? Strikethrough {
+        var result = AttributedString()
+        for child in strikethroughNode.children {
+            result += attributedFragment(for: child, isDarkMode: isDarkMode, bold: bold, italic: italic, strikethrough: true)
+        }
+        return result
+    } else if let codeSpan = markup as? InlineCode {
+        var attr = AttributedString(codeSpan.code)
+        attr.foregroundColor = baseColor
+        attr.font = .system(.body, design: .monospaced)
+        attr.backgroundColor = isDarkMode ? Color.white.opacity(0.15) : Color.black.opacity(0.08)
+        return attr
+    } else if let mdLink = markup as? MarkdownLink {
+        var result = AttributedString()
+        for child in mdLink.children {
+            result += attributedFragment(for: child, isDarkMode: isDarkMode, bold: bold, italic: italic, strikethrough: strikethrough)
+        }
+        result.foregroundColor = .blue
+        result.underlineStyle = .single
+        if let destination = mdLink.destination, let url = URL(string: destination) {
+            result.link = url
+        }
+        return result
+    } else if markup is SoftBreak {
+        return AttributedString(" ")
+    } else if markup is LineBreak {
+        return AttributedString("\n")
+    } else {
+        // Fallback for markup types we don't specifically style (rare/exotic nesting).
+        let fallbackText = (markup as? InlineMarkup)?.plainText ?? ""
+        var attr = AttributedString(fallbackText)
+        attr.foregroundColor = baseColor
+        return attr
+    }
+}
+
 struct MarkdownContentView: View {
     let document: Document
     let isDarkMode: Bool
@@ -66,7 +154,7 @@ struct MarkdownBlockView: View {
                 BlockQuoteView(blockQuote: blockQuote, isDarkMode: isDarkMode, onDiagramSelected: onDiagramSelected)
             } else if let table = block as? MarkdownTable {
                 TableView(table: table, isDarkMode: isDarkMode)
-            } else if let thematicBreak = block as? ThematicBreak {
+            } else if block is ThematicBreak {
                 Divider()
                     .padding(.vertical, 8)
             } else {
@@ -84,7 +172,6 @@ struct HeadingView: View {
     let isDarkMode: Bool
 
     var body: some View {
-        let text = heading.plainText
         let fontSize: CGFloat = {
             switch heading.level {
             case 1: return 32
@@ -97,7 +184,7 @@ struct HeadingView: View {
             }
         }()
 
-        Text(text)
+        Text(buildAttributedString(from: heading, isDarkMode: isDarkMode))
             .font(.system(size: fontSize, weight: .semibold, design: .default))
             .foregroundColor(isDarkMode ? .white : .black)
             .padding(.top, 16)
@@ -111,53 +198,9 @@ struct ParagraphView: View {
     let isDarkMode: Bool
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            ForEach(Array(paragraph.children.enumerated()), id: \.offset) { _, child in
-                InlineMarkupView(markup: child, isDarkMode: isDarkMode)
-            }
-        }
-        .lineSpacing(4)
-    }
-}
-
-// MARK: - Inline Markup
-struct InlineMarkupView: View {
-    let markup: Markup
-    let isDarkMode: Bool
-
-    var body: some View {
-        if let text = markup as? MarkdownText {
-            SwiftUI.Text(text.string)
-                .foregroundColor(isDarkMode ? .white : .black)
-        } else if let emphasis = markup as? Emphasis {
-            SwiftUI.Text(emphasis.plainText)
-                .italic()
-                .foregroundColor(isDarkMode ? .white : .black)
-        } else if let strong = markup as? Strong {
-            SwiftUI.Text(strong.plainText)
-                .bold()
-                .foregroundColor(isDarkMode ? .white : .black)
-        } else if let strikethrough = markup as? Strikethrough {
-            SwiftUI.Text(strikethrough.plainText)
-                .strikethrough()
-                .foregroundColor(isDarkMode ? .white : .black)
-        } else if let mdLink = markup as? MarkdownLink {
-            SwiftUI.Link(mdLink.plainText, destination: URL(string: mdLink.destination ?? "") ?? URL(fileURLWithPath: "/"))
-                .foregroundColor(.blue)
-        } else if let codeSpan = markup as? InlineCode {
-            SwiftUI.Text(codeSpan.code)
-                .font(.system(.body, design: .monospaced))
-                .padding(.horizontal, 4)
-                .padding(.vertical, 2)
-                .background(Color(nsColor: isDarkMode ? .darkGray : .lightGray))
-                .cornerRadius(3)
-        } else if let softBreak = markup as? SoftBreak {
-            SwiftUI.Text(" ")
-        } else if let lineBreak = markup as? LineBreak {
-            SwiftUI.Text("\n")
-        } else {
-            SwiftUI.Text("")
-        }
+        Text(buildAttributedString(from: paragraph, isDarkMode: isDarkMode))
+            .lineSpacing(4)
+            .fixedSize(horizontal: false, vertical: true)
     }
 }
 
@@ -252,51 +295,63 @@ struct MermaidBlockView: View {
         .onAppear {
             renderMermaidDiagram()
         }
+        // `.onAppear` only fires once when the view enters the hierarchy — it does NOT
+        // refire just because `isDarkMode` changes. Without this, toggling the app theme
+        // left already-rendered diagrams in their original color scheme.
+        .onChange(of: isDarkMode) { _ in
+            renderMermaidDiagram()
+        }
     }
 
     private func renderMermaidDiagram() {
         isLoading = true
         errorMessage = nil
 
+        guard let mmdcPath = MermaidCLI.resolvedPath else {
+            errorMessage = "mermaid-cli (mmdc) not found.\nInstall with: brew install mermaid-cli"
+            isLoading = false
+            return
+        }
+
+        let capturedCode = code
+        let capturedIsDarkMode = isDarkMode
+
         DispatchQueue.global(qos: .userInitiated).async {
             let tempDir = NSTemporaryDirectory()
-            let inputFile = (tempDir as NSString).appendingPathComponent("diagram_\(UUID().uuidString).mmd")
-            let outputFile = (tempDir as NSString).appendingPathComponent("diagram_\(UUID().uuidString).png")
+            let id = UUID().uuidString
+            let inputFile = (tempDir as NSString).appendingPathComponent("diagram_\(id).mmd")
+            let outputFile = (tempDir as NSString).appendingPathComponent("diagram_\(id).png")
 
             do {
-                try code.write(toFile: inputFile, atomically: true, encoding: .utf8)
+                try capturedCode.write(toFile: inputFile, atomically: true, encoding: .utf8)
 
                 let process = Process()
-                process.executableURL = URL(fileURLWithPath: "/opt/homebrew/bin/mmdc")
-                process.arguments = ["-i", inputFile, "-o", outputFile, "-t", isDarkMode ? "dark" : "default"]
+                process.executableURL = URL(fileURLWithPath: mmdcPath)
+                process.arguments = ["-i", inputFile, "-o", outputFile, "-t", capturedIsDarkMode ? "dark" : "default"]
 
-                // Capture stderr for better error messages
                 let errorPipe = Pipe()
                 process.standardError = errorPipe
 
                 try process.run()
+
+                // Drain the pipe BEFORE waitUntilExit(). If mermaid-cli/puppeteer writes
+                // more than the OS pipe buffer (~64KB) to stderr and nothing is reading it,
+                // the child blocks on write() while we block on waitUntilExit() — a
+                // classic Process/Pipe deadlock. readDataToEndOfFile() blocks until the
+                // write end closes (i.e. the child exits), so this drains safely instead.
+                let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
                 process.waitUntilExit()
 
-                if process.terminationStatus == 0 {
-                    // Wait a moment for file to be written
-                    Thread.sleep(forTimeInterval: 0.5)
-
-                    if let image = NSImage(contentsOfFile: outputFile) {
-                        DispatchQueue.main.async {
-                            self.svgImage = image
-                            self.isLoading = false
-                        }
-                    } else {
-                        DispatchQueue.main.async {
-                            self.errorMessage = "Failed to load diagram file"
-                            self.isLoading = false
-                        }
+                if process.terminationStatus == 0, let image = NSImage(contentsOfFile: outputFile) {
+                    DispatchQueue.main.async {
+                        self.svgImage = image
+                        self.isLoading = false
                     }
                 } else {
-                    let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
-                    let errorMessage = String(data: errorData, encoding: .utf8) ?? "Unknown error"
+                    let stderrText = String(data: errorData, encoding: .utf8)?
+                        .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
                     DispatchQueue.main.async {
-                        self.errorMessage = "Render failed: \(errorMessage.trimmingCharacters(in: .whitespacesAndNewlines))"
+                        self.errorMessage = stderrText.isEmpty ? "Diagram render failed" : "Render failed: \(stderrText)"
                         self.isLoading = false
                     }
                 }
@@ -311,6 +366,43 @@ struct MermaidBlockView: View {
             }
         }
     }
+}
+
+// MARK: - mermaid-cli resolution
+//
+// GUI apps launched from Finder don't inherit the interactive shell's PATH
+// (e.g. Homebrew's `eval $(brew shellenv)` in ~/.zshrc), so a plain PATH lookup
+// via /usr/bin/env often fails even when mmdc is installed. Check common install
+// locations first, falling back to a `which` invocation for anyone launching
+// the app from a Terminal-inherited environment.
+enum MermaidCLI {
+    static let resolvedPath: String? = {
+        let candidates = [
+            "/opt/homebrew/bin/mmdc",   // Homebrew, Apple Silicon
+            "/usr/local/bin/mmdc",      // Homebrew, Intel
+        ]
+        for path in candidates where FileManager.default.isExecutableFile(atPath: path) {
+            return path
+        }
+
+        let which = Process()
+        which.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        which.arguments = ["which", "mmdc"]
+        let pipe = Pipe()
+        which.standardOutput = pipe
+        which.standardError = Pipe()
+
+        guard (try? which.run()) != nil else { return nil }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        which.waitUntilExit()
+
+        guard let path = String(data: data, encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines), !path.isEmpty,
+            FileManager.default.isExecutableFile(atPath: path) else {
+            return nil
+        }
+        return path
+    }()
 }
 
 // MARK: - Lists
@@ -395,20 +487,59 @@ struct TableView: View {
     let isDarkMode: Bool
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            SwiftUI.Text("📊 Table")
-                .font(.caption)
-                .foregroundColor(.secondary)
+        let headCells = Array(table.head.cells)
+        let bodyRows = Array(table.body.rows)
+        let alignments = table.columnAlignments
 
-            SwiftUI.Text("[Table rendering - use web viewer for full table display]")
-                .font(.caption)
-                .italic()
-                .foregroundColor(.secondary)
-                .padding(8)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color(nsColor: isDarkMode ? .darkGray : NSColor(red: 0.95, green: 0.95, blue: 0.95, alpha: 1)))
-                .cornerRadius(4)
+        Grid(alignment: .topLeading, horizontalSpacing: 0, verticalSpacing: 0) {
+            GridRow {
+                ForEach(Array(headCells.enumerated()), id: \.offset) { index, cell in
+                    cellView(cell: cell, isHeader: true, alignment: alignments[safe: index] ?? nil)
+                }
+            }
+            ForEach(Array(bodyRows.enumerated()), id: \.offset) { rowIndex, row in
+                GridRow {
+                    ForEach(Array(row.cells.enumerated()), id: \.offset) { colIndex, cell in
+                        cellView(cell: cell, isHeader: false, alignment: alignments[safe: colIndex] ?? nil)
+                    }
+                }
+                .background(rowIndex % 2 == 0 ? Color.clear : Color.gray.opacity(0.06))
+            }
         }
+        .border(Color.gray.opacity(0.3), width: 1)
+        .cornerRadius(6)
+    }
+
+    @ViewBuilder
+    private func cellView(cell: MarkdownTable.Cell, isHeader: Bool, alignment: MarkdownTable.ColumnAlignment?) -> some View {
+        let textAlignment: TextAlignment = {
+            switch alignment {
+            case .center: return .center
+            case .right: return .trailing
+            default: return .leading
+            }
+        }()
+        let frameAlignment: Alignment = {
+            switch alignment {
+            case .center: return .top
+            case .right: return .topTrailing
+            default: return .topLeading
+            }
+        }()
+
+        Text(buildAttributedString(from: cell, isDarkMode: isDarkMode))
+            .multilineTextAlignment(textAlignment)
+            .fontWeight(isHeader ? .semibold : .regular)
+            .padding(8)
+            .frame(maxWidth: .infinity, alignment: frameAlignment)
+            .background(isHeader ? Color.gray.opacity(0.18) : Color.clear)
+            .overlay(Rectangle().stroke(Color.gray.opacity(0.25), lineWidth: 0.5))
+    }
+}
+
+private extension Array {
+    subscript(safe index: Int) -> Element? {
+        indices.contains(index) ? self[index] : nil
     }
 }
 
@@ -459,19 +590,6 @@ struct DiagramViewerWindow: View {
     }
 }
 
-
-// MARK: - Helper Extensions
-extension Comparable {
-    func clamped(to range: ClosedRange<Self>) -> Self {
-        if self < range.lowerBound {
-            return range.lowerBound
-        } else if self > range.upperBound {
-            return range.upperBound
-        } else {
-            return self
-        }
-    }
-}
 
 #Preview {
     MarkdownContentView(document: Document(parsing: "# Hello\n\nThis is a test"), isDarkMode: false)

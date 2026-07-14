@@ -1,5 +1,6 @@
 import SwiftUI
 import Markdown
+import UniformTypeIdentifiers
 
 // MARK: - Window Manager
 class DiagramWindowManager: NSObject, NSWindowDelegate {
@@ -23,11 +24,22 @@ class DiagramWindowManager: NSObject, NSWindowDelegate {
             hostingView.autoresizingMask = [.width, .height]
 
             window.contentView = hostingView
-            window.isReleasedWhenClosed = true
+
+            // We hold our own strong reference in `windows`, so AppKit must NOT also
+            // release the window when -close is called. Leaving this `true` causes a
+            // double-release race with the standard close-button's genie/transform
+            // animation, crashing in `_NSWindowTransformAnimation dealloc`.
+            window.isReleasedWhenClosed = false
 
             self?.windows.append(window)
             window.makeKeyAndOrderFront(nil)
         }
+    }
+
+    /// Diagram viewer windows are plain `NSWindow`s that can become `NSApp.mainWindow`.
+    /// Callers that need "the main app window" (e.g. the Open File sheet) should exclude these.
+    func isDiagramWindow(_ window: NSWindow) -> Bool {
+        windows.contains { $0 === window }
     }
 
     func windowWillClose(_ notification: Notification) {
@@ -60,7 +72,6 @@ struct ContentView: View {
                 Button(action: showFileDialog) {
                     Text("Open File…")
                 }
-                .keyboardShortcut("o", modifiers: .command)
 
                 Button(action: toggleTheme) {
                     Text(isDarkMode ? "☀️ Light" : "🌙 Dark")
@@ -134,16 +145,29 @@ struct ContentView: View {
         let dialog = NSOpenPanel()
         dialog.title = "Open Markdown File"
         dialog.message = "Choose a markdown file to open"
-        dialog.allowedFileTypes = ["md", "markdown", "mdown", "markdn", "mdwn", "mkd", "mkdn", "txt"]
+        dialog.allowedContentTypes = ["md", "markdown", "mdown", "markdn", "mdwn", "mkd", "mkdn", "txt"]
+            .compactMap { UTType(filenameExtension: $0) }
         dialog.allowsMultipleSelection = false
         dialog.canChooseDirectories = false
         dialog.canCreateDirectories = false
 
-        if let window = NSApplication.shared.mainWindow {
+        // `NSApp.mainWindow` can be nil, or can point at a diagram viewer window
+        // (those are plain NSWindows too and can become "main"). Find the real
+        // app content window explicitly, and fall back to a standalone modal
+        // dialog rather than silently doing nothing.
+        let targetWindow = NSApplication.shared.windows.first {
+            $0.isVisible && !DiagramWindowManager.shared.isDiagramWindow($0)
+        }
+
+        if let window = targetWindow {
             dialog.beginSheetModal(for: window) { response in
                 if response == .OK, let url = dialog.url {
                     loadFile(url: url)
                 }
+            }
+        } else {
+            if dialog.runModal() == .OK, let url = dialog.url {
+                loadFile(url: url)
             }
         }
     }
