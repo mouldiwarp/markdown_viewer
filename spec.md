@@ -74,7 +74,7 @@ flowchart TB
     CV -- "Document (swift-markdown AST)" --> MCV
     MCV --> MBV
     MBV -->|Heading/Paragraph/Table cell text| AttrStr
-    MBV -->|"```mermaid block"| MER
+    MBV -->|"mermaid code block"| MER
     MBV -->|table block| TBL
     MER -- "click: (source, previewImage)" --> DWM
     DWM --> DVW
