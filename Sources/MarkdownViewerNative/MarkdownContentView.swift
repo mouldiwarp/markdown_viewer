@@ -34,11 +34,24 @@ struct MarkdownContentView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .background(Color(nsColor: isDarkMode ? .black : .white))
-        .sheet(isPresented: $showDiagramViewer) {
-            if let diagram = selectedDiagram {
-                DiagramViewerWindow(image: diagram, isDarkMode: isDarkMode)
+        .onReceive([showDiagramViewer].publisher) { value in
+            if value, let diagram = selectedDiagram {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                    openDiagramWindow(diagram: diagram)
+                    showDiagramViewer = false
+                }
             }
         }
+    }
+
+    private func openDiagramWindow(diagram: NSImage) {
+        let window = NSWindow()
+        let contentView = DiagramViewerWindow(image: diagram, isDarkMode: isDarkMode)
+        window.contentView = NSHostingView(rootView: contentView)
+        window.styleMask = [.titled, .closable, .resizable, .fullSizeContentView]
+        window.title = "Diagram Viewer"
+        window.setFrame(NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1200, height: 800), display: true)
+        window.makeKeyAndOrderFront(nil)
     }
 }
 
@@ -413,10 +426,6 @@ struct TableView: View {
 struct DiagramViewerWindow: View {
     let image: NSImage
     let isDarkMode: Bool
-    @Environment(\.dismiss) var dismiss
-
-    @State private var scale: CGFloat = 1.0
-    @State private var offset: CGSize = .zero
 
     var body: some View {
         VStack(spacing: 0) {
@@ -427,111 +436,29 @@ struct DiagramViewerWindow: View {
 
                 Spacer()
 
-                Button(action: resetZoom) {
-                    Image(systemName: "arrow.up.left.and.arrow.down.right")
-                        .font(.system(size: 14))
-                }
-                .help("Reset zoom and pan (R)")
-                .keyboardShortcut("r", modifiers: [])
-
-                Button(action: { dismiss() }) {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 18))
-                        .foregroundColor(.secondary)
-                }
-                .help("Close (Esc)")
-                .keyboardShortcut(.cancelAction)
+                Text("\(Int(image.size.width)) × \(Int(image.size.height))")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
             }
             .padding(12)
             .background(Color(nsColor: isDarkMode ? .darkGray : .lightGray))
             .border(Color.gray.opacity(0.3), width: 1)
 
-            // Diagram with zoom and pan
-            ZoomablePanView(image: image, scale: $scale, offset: $offset, isDarkMode: isDarkMode)
-                .ignoresSafeArea()
+            // Diagram - auto-fitted to screen
+            ZStack {
+                Color(nsColor: isDarkMode ? .black : .white)
 
-            // Controls hint
-            VStack(spacing: 4) {
-                Text("🔍 Scroll to zoom • Drag to pan • R to reset • Double-click to reset zoom")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFit()
+                    .padding()
             }
-            .padding(8)
-            .background(Color(nsColor: isDarkMode ? NSColor(red: 0.1, green: 0.1, blue: 0.1, alpha: 1) : NSColor(red: 0.95, green: 0.95, blue: 0.95, alpha: 1)))
         }
         .background(Color(nsColor: isDarkMode ? .black : .white))
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
-
-    private func resetZoom() {
-        withAnimation(.easeInOut(duration: 0.3)) {
-            scale = 1.0
-            offset = .zero
-        }
-    }
 }
 
-// MARK: - Zoomable Pan View
-struct ZoomablePanView: View {
-    let image: NSImage
-    @Binding var scale: CGFloat
-    @Binding var offset: CGSize
-    let isDarkMode: Bool
-
-    @State private var lastScale: CGFloat = 1.0
-    @State private var lastDragValue: CGSize = .zero
-
-    var body: some View {
-        ZStack {
-            Color(nsColor: isDarkMode ? .black : .white)
-
-            Image(nsImage: image)
-                .resizable()
-                .scaledToFit()
-                .scaleEffect(scale, anchor: .center)
-                .offset(offset)
-        }
-        .contentShape(Rectangle())
-        .gesture(
-            MagnificationGesture()
-                .onChanged { value in
-                    let delta = value / lastScale
-                    lastScale = value
-
-                    // Constrain zoom between 0.5x and 5x
-                    let newScale = (scale * delta).clamped(to: 0.5...5.0)
-                    scale = newScale
-                }
-                .onEnded { _ in
-                    lastScale = 1.0
-                }
-        )
-        .gesture(
-            DragGesture()
-                .onChanged { value in
-                    let newDrag = value.translation
-                    let delta = CGSize(
-                        width: newDrag.width - lastDragValue.width,
-                        height: newDrag.height - lastDragValue.height
-                    )
-
-                    offset.width += delta.width
-                    offset.height += delta.height
-                    lastDragValue = newDrag
-                }
-                .onEnded { _ in
-                    lastDragValue = .zero
-                }
-        )
-        .onTapGesture(count: 2) {
-            // Double-tap to reset
-            withAnimation(.easeInOut(duration: 0.3)) {
-                scale = 1.0
-                offset = .zero
-            }
-        }
-    }
-}
 
 // MARK: - Helper Extensions
 extension Comparable {
