@@ -7,7 +7,7 @@ class DiagramWindowManager: NSObject, NSWindowDelegate {
     static let shared = DiagramWindowManager()
     private var windows: [NSWindow] = []
 
-    func openDiagramWindow(image: NSImage, isDarkMode: Bool) {
+    func openDiagramWindow(source: String, previewImage: NSImage, isDarkMode: Bool) {
         DispatchQueue.main.async { [weak self] in
             let window = NSWindow(
                 contentRect: NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1200, height: 800),
@@ -19,7 +19,7 @@ class DiagramWindowManager: NSObject, NSWindowDelegate {
             window.title = "Diagram Viewer"
             window.delegate = self
 
-            let contentView = DiagramViewerWindow(image: image, isDarkMode: isDarkMode)
+            let contentView = DiagramViewerWindow(source: source, previewImage: previewImage, isDarkMode: isDarkMode)
             let hostingView = NSHostingView(rootView: contentView)
             hostingView.autoresizingMask = [.width, .height]
 
