@@ -443,6 +443,16 @@ struct DiagramViewerWindow: View {
                     .scaledToFit()
                     .padding()
             }
+
+            // Footer with close instructions
+            VStack(spacing: 4) {
+                Text("Click the ✕ button in the top-right corner to close this window")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            .padding(10)
+            .background(Color(nsColor: isDarkMode ? NSColor(red: 0.08, green: 0.08, blue: 0.08, alpha: 1) : NSColor(red: 0.98, green: 0.98, blue: 0.98, alpha: 1)))
+            .border(Color.gray.opacity(0.2), width: 1)
         }
         .background(Color(nsColor: isDarkMode ? .black : .white))
         .frame(maxWidth: .infinity, maxHeight: .infinity)
