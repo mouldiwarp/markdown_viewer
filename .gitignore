@@ -1,0 +1,8 @@
+.build/
+.swiftpm/
+.DS_Store
+*.xcodeproj/
+*.xcworkspace/
+*.playground
+.env
+.env.local
