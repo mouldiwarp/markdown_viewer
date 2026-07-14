@@ -98,7 +98,8 @@ struct MarkdownContentView: View {
     let document: Document
     let isDarkMode: Bool
 
-    @State private var selectedDiagram: NSImage?
+    @State private var selectedDiagramSource: String?
+    @State private var selectedDiagramPreview: NSImage?
     @State private var showDiagramViewer = false
 
     var body: some View {
@@ -108,8 +109,9 @@ struct MarkdownContentView: View {
                     MarkdownBlockView(
                         block: block,
                         isDarkMode: isDarkMode,
-                        onDiagramSelected: { image in
-                            selectedDiagram = image
+                        onDiagramSelected: { source, preview in
+                            selectedDiagramSource = source
+                            selectedDiagramPreview = preview
                             showDiagramViewer = true
                         }
                     )
@@ -123,9 +125,9 @@ struct MarkdownContentView: View {
         }
         .background(Color(nsColor: isDarkMode ? .black : .white))
         .onReceive([showDiagramViewer].publisher) { value in
-            if value, let diagram = selectedDiagram {
+            if value, let source = selectedDiagramSource, let preview = selectedDiagramPreview {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                    DiagramWindowManager.shared.openDiagramWindow(image: diagram, isDarkMode: isDarkMode)
+                    DiagramWindowManager.shared.openDiagramWindow(source: source, previewImage: preview, isDarkMode: isDarkMode)
                     showDiagramViewer = false
                 }
             }
@@ -136,7 +138,7 @@ struct MarkdownContentView: View {
 struct MarkdownBlockView: View {
     let block: Markup
     let isDarkMode: Bool
-    let onDiagramSelected: ((NSImage) -> Void)?
+    let onDiagramSelected: ((String, NSImage) -> Void)?
 
     var body: some View {
         Group {
@@ -208,7 +210,7 @@ struct ParagraphView: View {
 struct CodeBlockView: View {
     let codeBlock: CodeBlock
     let isDarkMode: Bool
-    let onDiagramSelected: ((NSImage) -> Void)?
+    let onDiagramSelected: ((String, NSImage) -> Void)?
 
     var body: some View {
         let language = codeBlock.language ?? "plain"
@@ -243,11 +245,14 @@ struct CodeBlockView: View {
 struct MermaidBlockView: View {
     let code: String
     let isDarkMode: Bool
-    let onDiagramSelected: ((NSImage) -> Void)?
+    let onDiagramSelected: ((String, NSImage) -> Void)?
 
     @State private var svgImage: NSImage?
     @State private var isLoading = false
     @State private var errorMessage: String?
+
+    /// Scale for the small inline preview embedded in the document flow.
+    private let previewScale = 2
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -279,7 +284,10 @@ struct MermaidBlockView: View {
                     .scaledToFit()
                     .frame(maxWidth: .infinity, maxHeight: 400)
                     .onTapGesture {
-                        onDiagramSelected?(image)
+                        // Pass the raw source, not this preview image — the full-screen
+                        // viewer re-renders from source at a much higher scale so text
+                        // stays crisp instead of upscaling this small preview bitmap.
+                        onDiagramSelected?(code, image)
                     }
                     .help("Click to open interactive zoom and pan view")
             } else {
@@ -307,57 +315,17 @@ struct MermaidBlockView: View {
         isLoading = true
         errorMessage = nil
 
-        guard let mmdcPath = MermaidCLI.resolvedPath else {
-            errorMessage = "mermaid-cli (mmdc) not found.\nInstall with: brew install mermaid-cli"
-            isLoading = false
-            return
-        }
-
         let capturedCode = code
         let capturedIsDarkMode = isDarkMode
+        let scale = previewScale
 
         DispatchQueue.global(qos: .userInitiated).async {
-            let tempDir = NSTemporaryDirectory()
-            let id = UUID().uuidString
-            let inputFile = (tempDir as NSString).appendingPathComponent("diagram_\(id).mmd")
-            let outputFile = (tempDir as NSString).appendingPathComponent("diagram_\(id).png")
-
             do {
-                try capturedCode.write(toFile: inputFile, atomically: true, encoding: .utf8)
-
-                let process = Process()
-                process.executableURL = URL(fileURLWithPath: mmdcPath)
-                process.arguments = ["-i", inputFile, "-o", outputFile, "-t", capturedIsDarkMode ? "dark" : "default"]
-
-                let errorPipe = Pipe()
-                process.standardError = errorPipe
-
-                try process.run()
-
-                // Drain the pipe BEFORE waitUntilExit(). If mermaid-cli/puppeteer writes
-                // more than the OS pipe buffer (~64KB) to stderr and nothing is reading it,
-                // the child blocks on write() while we block on waitUntilExit() — a
-                // classic Process/Pipe deadlock. readDataToEndOfFile() blocks until the
-                // write end closes (i.e. the child exits), so this drains safely instead.
-                let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
-                process.waitUntilExit()
-
-                if process.terminationStatus == 0, let image = NSImage(contentsOfFile: outputFile) {
-                    DispatchQueue.main.async {
-                        self.svgImage = image
-                        self.isLoading = false
-                    }
-                } else {
-                    let stderrText = String(data: errorData, encoding: .utf8)?
-                        .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                    DispatchQueue.main.async {
-                        self.errorMessage = stderrText.isEmpty ? "Diagram render failed" : "Render failed: \(stderrText)"
-                        self.isLoading = false
-                    }
+                let image = try MermaidRenderer.render(code: capturedCode, isDarkMode: capturedIsDarkMode, scale: scale)
+                DispatchQueue.main.async {
+                    self.svgImage = image
+                    self.isLoading = false
                 }
-
-                try? FileManager.default.removeItem(atPath: inputFile)
-                try? FileManager.default.removeItem(atPath: outputFile)
             } catch {
                 DispatchQueue.main.async {
                     self.errorMessage = error.localizedDescription
@@ -403,6 +371,69 @@ enum MermaidCLI {
         }
         return path
     }()
+}
+
+// MARK: - Shared mermaid-cli invocation
+//
+// Renders mermaid source to an NSImage via mmdc. `scale` is puppeteer's device-scale
+// factor (mmdc's `-s` flag): it renders the same diagram layout at more physical pixels
+// per logical point, exactly like a Retina screenshot. Callers pick a scale appropriate
+// to how large the result will be displayed — a small inline preview only needs a modest
+// scale, while the full-screen viewer re-renders from source at a high scale so text
+// stays sharp instead of stretching a low-resolution bitmap.
+enum MermaidRenderer {
+    struct RenderError: LocalizedError {
+        let message: String
+        var errorDescription: String? { message }
+    }
+
+    /// Synchronous — call from a background queue.
+    static func render(code: String, isDarkMode: Bool, scale: Int) throws -> NSImage {
+        guard let mmdcPath = MermaidCLI.resolvedPath else {
+            throw RenderError(message: "mermaid-cli (mmdc) not found.\nInstall with: brew install mermaid-cli")
+        }
+
+        let tempDir = NSTemporaryDirectory()
+        let id = UUID().uuidString
+        let inputFile = (tempDir as NSString).appendingPathComponent("diagram_\(id).mmd")
+        let outputFile = (tempDir as NSString).appendingPathComponent("diagram_\(id).png")
+        defer {
+            try? FileManager.default.removeItem(atPath: inputFile)
+            try? FileManager.default.removeItem(atPath: outputFile)
+        }
+
+        try code.write(toFile: inputFile, atomically: true, encoding: .utf8)
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: mmdcPath)
+        process.arguments = [
+            "-i", inputFile,
+            "-o", outputFile,
+            "-t", isDarkMode ? "dark" : "default",
+            "-s", String(scale),
+        ]
+
+        let errorPipe = Pipe()
+        process.standardError = errorPipe
+
+        try process.run()
+
+        // Drain the pipe BEFORE waitUntilExit(). If mermaid-cli/puppeteer writes more
+        // than the OS pipe buffer (~64KB) to stderr and nothing is reading it, the child
+        // blocks on write() while we block on waitUntilExit() — a classic Process/Pipe
+        // deadlock. readDataToEndOfFile() blocks until the write end closes (i.e. the
+        // child exits), so this drains safely instead.
+        let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+
+        guard process.terminationStatus == 0, let image = NSImage(contentsOfFile: outputFile) else {
+            let stderrText = String(data: errorData, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            throw RenderError(message: stderrText.isEmpty ? "Diagram render failed" : "Render failed: \(stderrText)")
+        }
+
+        return image
+    }
 }
 
 // MARK: - Lists
@@ -460,7 +491,7 @@ struct OrderedListView: View {
 struct BlockQuoteView: View {
     let blockQuote: BlockQuote
     let isDarkMode: Bool
-    let onDiagramSelected: ((NSImage) -> Void)?
+    let onDiagramSelected: ((String, NSImage) -> Void)?
 
     var body: some View {
         HStack(spacing: 0) {
@@ -545,8 +576,23 @@ private extension Array {
 
 // MARK: - Diagram Viewer Window
 struct DiagramViewerWindow: View {
-    let image: NSImage
+    /// Raw mermaid source — re-rendered fresh at a much higher scale for this window,
+    /// rather than stretching the small inline preview bitmap (which is what made text
+    /// go blurry when the diagram was expanded).
+    let source: String
+    /// Shown immediately while the high-resolution version renders in the background.
+    let previewImage: NSImage
     let isDarkMode: Bool
+
+    @State private var displayedImage: NSImage
+    @State private var isRefining = true
+
+    init(source: String, previewImage: NSImage, isDarkMode: Bool) {
+        self.source = source
+        self.previewImage = previewImage
+        self.isDarkMode = isDarkMode
+        _displayedImage = State(initialValue: previewImage)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -557,7 +603,16 @@ struct DiagramViewerWindow: View {
 
                 Spacer()
 
-                Text("\(Int(image.size.width)) × \(Int(image.size.height))")
+                if isRefining {
+                    HStack(spacing: 6) {
+                        ProgressView().scaleEffect(0.6)
+                        Text("Sharpening…")
+                    }
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                }
+
+                Text("\(Int(displayedImage.size.width)) × \(Int(displayedImage.size.height))")
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
@@ -569,10 +624,13 @@ struct DiagramViewerWindow: View {
             ZStack {
                 Color(nsColor: isDarkMode ? .black : .white)
 
-                Image(nsImage: image)
+                Image(nsImage: displayedImage)
                     .resizable()
                     .scaledToFit()
                     .padding()
+            }
+            .onAppear {
+                renderHighResolution()
             }
 
             // Footer with close instructions
@@ -588,8 +646,32 @@ struct DiagramViewerWindow: View {
         .background(Color(nsColor: isDarkMode ? .black : .white))
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
-}
 
+    private func renderHighResolution() {
+        let capturedSource = source
+        let capturedIsDarkMode = isDarkMode
+
+        // A high, fixed device-scale factor rather than the small inline preview's scale.
+        // Mermaid diagrams are laid out at a fixed logical size regardless of scale, so
+        // this simply renders far more physical pixels for the same layout — like a
+        // Retina screenshot — which stays crisp even filling a large or 4K/5K screen.
+        let screenScale = NSScreen.main?.backingScaleFactor ?? 2
+        let scale = max(4, Int((screenScale * 2).rounded(.up)))
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            guard let image = try? MermaidRenderer.render(code: capturedSource, isDarkMode: capturedIsDarkMode, scale: scale) else {
+                DispatchQueue.main.async {
+                    self.isRefining = false
+                }
+                return
+            }
+            DispatchQueue.main.async {
+                self.displayedImage = image
+                self.isRefining = false
+            }
+        }
+    }
+}
 
 #Preview {
     MarkdownContentView(document: Document(parsing: "# Hello\n\nThis is a test"), isDarkMode: false)
